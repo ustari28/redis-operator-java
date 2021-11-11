@@ -18,8 +18,6 @@ spec:
             spec:
               type: object
               properties:
-                image:
-                  type: string
                 replicas:
                   type: integer
                   minimum: 3
