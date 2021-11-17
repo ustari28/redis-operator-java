@@ -1,0 +1,6 @@
+apiVersion: operator.java.developer.alan.com/v1beta
+kind: RedisCluster
+metadata:
+  name: redis-cluster-test
+spec:
+  replicas: 3

@@ -22,7 +22,7 @@ public class RedisOperatorApp {
         try (KubernetesClient kClient = new DefaultKubernetesClient()) {
             String ns = Optional.ofNullable(kClient.getNamespace()).orElse("default");
             SharedInformerFactory informers = kClient.informers();
-            MixedOperation redisClient = kClient.genericKubernetesResources("v1beta", "RedisCluster");
+            MixedOperation redisClient = kClient.genericKubernetesResources("operator.java.developer.alan.com/v1beta", "RedisCluster");
             SharedIndexInformer podInformer = informers.sharedIndexInformerFor(Pod.class, 10 * 60 * 1000);
             SharedIndexInformer redisClusterInformer = informers.sharedIndexInformerFor(RedisCluster.class, 10 * 60 * 1000);
             RedisClusterController rcc = new RedisClusterController(kClient, redisClient, podInformer, redisClusterInformer, ns);

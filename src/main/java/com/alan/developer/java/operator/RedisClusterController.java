@@ -1,29 +1,32 @@
 package com.alan.developer.java.operator;
 
 import io.fabric8.kubernetes.api.model.*;
+import io.fabric8.kubernetes.api.model.apps.StatefulSet;
 import io.fabric8.kubernetes.api.model.apps.StatefulSetBuilder;
 import io.fabric8.kubernetes.client.KubernetesClient;
 import io.fabric8.kubernetes.client.dsl.MixedOperation;
+import io.fabric8.kubernetes.client.dsl.Resource;
 import io.fabric8.kubernetes.client.informers.ResourceEventHandler;
 import io.fabric8.kubernetes.client.informers.SharedIndexInformer;
 import io.fabric8.kubernetes.client.informers.cache.Cache;
 import io.fabric8.kubernetes.client.informers.cache.Lister;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.commons.lang3.RandomStringUtils;
 
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 import java.util.stream.Collectors;
-import java.util.stream.IntStream;
 
 @Slf4j
 public class RedisClusterController {
     private final KubernetesClient kClient;
     private final SharedIndexInformer<Pod> podInformer;
     private final SharedIndexInformer<RedisCluster> redisClusterInformer;
-    private final MixedOperation redisClient;
+    private final MixedOperation<RedisCluster, RedisClusterList, Resource<RedisCluster>> redisClient;
     private final Lister<RedisCluster> podRedisClusterLister;
-    private final Lister<Pod> podLister;
     private final BlockingQueue<String> workqueue;
     private static final String APP_LABEL = "rc_operator";
 
@@ -36,7 +39,6 @@ public class RedisClusterController {
         this.redisClusterInformer = redisClusterInformer;
         this.redisClient = redisClient;
         this.podRedisClusterLister = new Lister<RedisCluster>(redisClusterInformer.getIndexer(), namespace);
-        this.podLister = new Lister<>(podInformer.getIndexer(), namespace);
         this.workqueue = new ArrayBlockingQueue<>(128);
     }
 
@@ -105,18 +107,48 @@ public class RedisClusterController {
     }
 
     public void reconcile(RedisCluster pod) {
-        List<String> pods = podLister.list().stream().filter(p ->
-                        p.getMetadata().getLabels().entrySet().contains(
-                                new AbstractMap.SimpleEntry<>(APP_LABEL, pod.getMetadata().getName()))
-                                && (p.getStatus().getPhase().compareToIgnoreCase("Running") == 0)
-                                || p.getStatus().getPhase().compareToIgnoreCase("Pending") == 0)
-                .map(po -> pod.getMetadata().getName()).collect(Collectors.toList());
+        initTasks(pod);
+        List<String> leaders = kClient.pods().inNamespace(pod.getMetadata().getNamespace()).withLabel("operator", APP_LABEL)
+                .withLabel("app", "redis-leader").list().getItems().stream().filter(p -> p.getStatus().getPhase().compareToIgnoreCase("Running") == 0
+                        || p.getStatus().getPhase().compareToIgnoreCase("Pending") == 0)
+                .map(x -> x.getMetadata().getName()).collect(Collectors.toList());
+        List<String> followers = kClient.pods().inNamespace(pod.getMetadata().getNamespace()).withLabel("operator", APP_LABEL)
+                .withLabel("app", "redis-follower").list().getItems().stream().filter(p -> p.getStatus().getPhase().compareToIgnoreCase("Running") == 0
+                        || p.getStatus().getPhase().compareToIgnoreCase("Pending") == 0)
+                .map(x -> x.getMetadata().getName()).collect(Collectors.toList());
         Integer desiredReplicas = pod.getSpec().getReplicas();
+        if (desiredReplicas != leaders.size()) {
+            kClient.apps().statefulSets().createOrReplace(createStatefulSet(pod, "redis-leader"));
+        }
+        if (desiredReplicas != followers.size()) {
+            kClient.apps().statefulSets().createOrReplace(createStatefulSet(pod, "redis-follower"));
+        }
 
     }
 
-    private void generatePods(Integer instances) {
+    private void initTasks(RedisCluster pod) {
+        log.info("Performing initial tasks");
+        Service headLess = createHeadLessService(pod.getMetadata().getNamespace());
+        Secret secret = createSecret(pod.getMetadata().getNamespace());
+        if (Objects.isNull(kClient.secrets().inNamespace(pod.getMetadata().getNamespace()).withName("redis").get())) {
+            log.info("Generating secret for cluster");
+            kClient.services().createOrReplace(headLess);
+        }
+        kClient.secrets().createOrReplace(secret);
+        try {
+            kClient.configMaps().createOrReplace(createConfigMap(pod));
+        } catch (IOException e) {
+            log.error("Redis configmap can't be created - {}", e.getMessage());
+            e.printStackTrace();
+        }
+    }
 
+    private Secret createSecret(String namespace) {
+        return new SecretBuilder()
+                .withNewMetadata().withName("redis").withNamespace(namespace).addToLabels("app", "redis-cluster")
+                .endMetadata()
+                .addToData("password", Base64.getEncoder().encodeToString(
+                        RandomStringUtils.randomAlphanumeric(16).getBytes(StandardCharsets.UTF_8))).build();
     }
 
     private Service createHeadLessService(String namespace) {
@@ -124,17 +156,25 @@ public class RedisClusterController {
                 .withNewMetadata().withName("redis-headless").withNamespace(namespace)
                 .withLabels(Map.of("operator", APP_LABEL, "app", "redis-headless"))
                 .endMetadata()
-                .withNewSpec().withSelector(Map.of("cluster", "redis-master")).endSpec().editOrNewSpec()
-                .addNewPort().withPort(6379).withTargetPort(new IntOrString(6379)).endPort()
-                .addNewPort().withPort(16379).withTargetPort(new IntOrString(16379)).endPort()
+                .withNewSpec().withSelector(Map.of("cluster", "redis-leader")).endSpec().editOrNewSpec()
+                .addNewPort().withName("6379").withPort(6379).withTargetPort(new IntOrString(6379)).endPort()
+                .addNewPort().withName("16379").withPort(16379).withTargetPort(new IntOrString(16379)).endPort()
                 .endSpec().build();
     }
 
-    private void createStatefulSet(Integer currentPods, Integer nPods, RedisCluster pod, Integer type) {
+    private ConfigMap createConfigMap(RedisCluster pod) throws IOException {
+        return new ConfigMapBuilder()
+                .withNewMetadata().withName("redis").withNamespace(pod.getMetadata().getNamespace())
+                .addToLabels("operator", APP_LABEL).endMetadata()
+                .addToData("redis.conf", new String(ClassLoader.getSystemResourceAsStream("redis.conf").readAllBytes(), StandardCharsets.UTF_8))
+                .build();
+    }
+
+    private StatefulSet createStatefulSet(RedisCluster pod, String appLabel) {
 
         List<EnvVar> vars = new ArrayList<>();
-        EnvVar redisPasswordVar = new EnvVarBuilder().withName("REDIS_PASSWORD").withValueFrom(
-                new EnvVarSourceBuilder().withNewSecretKeyRef("password", "redis-secret", false).build()).build();
+        EnvVar redisPasswordVar = new EnvVarBuilder().withName("REDISCLI_AUTH").withValueFrom(
+                new EnvVarSourceBuilder().withNewSecretKeyRef("password", "redis", false).build()).build();
         vars.add(redisPasswordVar);
         vars.add(new EnvVarBuilder().withName("MY_POD_NAME").withValueFrom(
                 new EnvVarSourceBuilder().withNewFieldRef("v1", "metadata.name").build()).build());
@@ -143,54 +183,44 @@ public class RedisClusterController {
         vars.add(new EnvVarBuilder().withName("K8S_SERVICE_NAME").withValue("redis-headless").build());
         vars.add(new EnvVarBuilder().withName("REDIS_NODENAME")
                 .withValue("$(MY_POD_NAME).$(K8S_SERVICE_NAME).$(MY_POD_NAMESPACE).svc.cluster.local").build());
-        if (type == 0) {
-            // masters
-            IntStream.range(currentPods, nPods).forEach(i ->
-                    new StatefulSetBuilder()
-                            .withNewMetadata().withName("redis-master-" + i)
-                            .withNamespace(pod.getMetadata().getNamespace())
-                            .withLabels(Map.of("operator", APP_LABEL, "app", "redis-cluster"))
-                            .endMetadata().withNewSpec()
-                            .withNewSelector().withMatchLabels(Map.of("cluster", "redis-master")).endSelector()
-                            .withServiceName("redis-headless")
-                            .withReplicas(3)
-                            .withVolumeClaimTemplates(new PersistentVolumeClaimBuilder().withNewMetadata()
-                                    .withName("cluster-storage").endMetadata()
-                                    .withNewSpec().addNewAccessMode("ReadWriteOnce").withStorageClassName("default")
-                                    .withNewResources().addToRequests("storage", new QuantityBuilder().withAmount("1Gi").build())
-                                    .endResources().endSpec().build())
-                            .withNewTemplate().withNewMetadata()
-                            .withLabels(Map.of("cluster", "redis-master")).endMetadata()
-                            .withNewSpec().withTerminationGracePeriodSeconds(60L)
-                            .addNewVolume().withName("work-dir").withNewEmptyDir().endEmptyDir().endVolume()
-                            .addNewVolume().withName("redis-config")
-                            .withNewConfigMap().withName("redis-config")
-                            .addToItems(new KeyToPathBuilder().withKey("redis.conf").withPath("redis.conf").build()).endConfigMap()
-                            .endVolume()
-                            .addNewInitContainer()
-                            .withName("setup").withImage("busybox").withImagePullPolicy("IfNotPresent").withCommand("/bin/sh", "-c")
-                            .withArgs("cp /tmp/conf/redis.conf /usr/local/etc/redis/",
-                                    "echo -e \"\nmasterauth $(REDIS_PASSWORD)\" >>  /usr/local/etc/redis/redis.conf",
-                                    "echo -e \"\nrequirepass $(REDIS_PASSWORD)\" >>  /usr/local/etc/redis/redis.conf")
-                            .addNewVolumeMount().withName("redis-config").withMountPath("/tmp/conf/redis.conf").withSubPath("redis.conf").endVolumeMount()
-                            .addNewVolumeMount().withName("work-dir").withMountPath("/usr/local/etc/redis").endVolumeMount()
-                            .addToEnv(redisPasswordVar)
-                            .endInitContainer()
-                            .addNewContainer().withName("redis").withImage("redis:6.2.6")
-                            .addNewPort().withContainerPort(6379).endPort()
-                            .addNewPort().withContainerPort(6380).endPort()
-                            .addNewPort().withContainerPort(16379).endPort()
-                            .addNewCommand("/bin/sh").addToCommand("-c").addNewArg("/usr/local/bin/redis-server /usr/local/etc/redis/redis.conf")
-                            .addAllToEnv(vars)
-                            .addNewVolumeMount().withMountPath("/data").withName("cluster-storage").endVolumeMount()
-                            .addNewVolumeMount().withMountPath("/usr/local/etc/redis").withName("work-dir").endVolumeMount()
-
-            );
-        } else if (type == 1){
-            // followers
-
-        }
-
+        return new StatefulSetBuilder()
+                .withNewMetadata().withName(appLabel)
+                .withNamespace(pod.getMetadata().getNamespace())
+                .withLabels(Map.of("operator", APP_LABEL, "app", appLabel))
+                .endMetadata().withNewSpec()
+                .withNewSelector().withMatchLabels(Map.of("cluster", appLabel)).endSelector()
+                .withServiceName("redis-headless")
+                .withReplicas(pod.getSpec().getReplicas())
+                .withVolumeClaimTemplates(new PersistentVolumeClaimBuilder().withNewMetadata()
+                        .withName("cluster-storage").endMetadata()
+                        .withNewSpec().addNewAccessMode("ReadWriteOnce").withStorageClassName("standard")
+                        .withNewResources().addToRequests("storage", new QuantityBuilder().withAmount("2Gi").build())
+                        .endResources().endSpec().build())
+                .withNewTemplate().withNewMetadata()
+                .withLabels(Map.of("cluster", appLabel)).endMetadata()
+                .withNewSpec().withTerminationGracePeriodSeconds(30L)
+                .addNewVolume().withName("work-dir").withNewEmptyDir().endEmptyDir().endVolume()
+                .addNewVolume().withName("redis-config")
+                .withNewConfigMap().withName("redis")
+                .addToItems(new KeyToPathBuilder().withKey("redis.conf").withPath("redis.conf").build()).endConfigMap()
+                .endVolume()
+                .addNewInitContainer()
+                .withName("setup").withImage("busybox").withImagePullPolicy("IfNotPresent").withCommand("/bin/sh", "-c")
+                .withArgs("cp /tmp/conf/redis.conf /usr/local/etc/redis/;echo -e \"\nmasterauth $(REDISCLI_AUTH)\" >>  /usr/local/etc/redis/redis.conf;echo -e \"\nrequirepass $(REDISCLI_AUTH)\" >>  /usr/local/etc/redis/redis.conf")
+                .addNewVolumeMount().withName("redis-config").withMountPath("/tmp/conf/redis.conf").withSubPath("redis.conf").endVolumeMount()
+                .addNewVolumeMount().withName("work-dir").withMountPath("/usr/local/etc/redis").endVolumeMount()
+                .addToEnv(redisPasswordVar)
+                .endInitContainer()
+                .addNewContainer().withName("redis").withImage("redis:6.2.6")
+                .addNewPort().withContainerPort(6379).endPort()
+                .addNewPort().withContainerPort(6380).endPort()
+                .addNewPort().withContainerPort(16379).endPort()
+                .addNewCommand("/bin/sh").addToCommand("-c").addNewArg("/usr/local/bin/redis-server /usr/local/etc/redis/redis.conf")
+                .addAllToEnv(vars)
+                .addNewVolumeMount().withMountPath("/data").withName("cluster-storage").endVolumeMount()
+                .addNewVolumeMount().withMountPath("/usr/local/etc/redis").withName("work-dir").endVolumeMount()
+                .endContainer().endSpec().endTemplate().endSpec().build()
+                ;
     }
 
     private void handlePodObject(Pod pod) {
@@ -200,7 +230,8 @@ public class RedisClusterController {
         if (ownerReference.isPresent() && !ownerReference.get().getKind().equalsIgnoreCase("RedisCluster")) {
             log.debug("Pod {} is not RedisCluster", ownerReference.get().getKind());
         } else {
-            Optional<RedisCluster> redisCluster = Optional.ofNullable(podRedisClusterLister.get(ownerReference.get().getName()));
+            log.debug("Looking for {}", pod.getMetadata().getName());
+            Optional<RedisCluster> redisCluster = Optional.ofNullable(podRedisClusterLister.get(pod.getMetadata().getName()));
             if (redisCluster.isPresent()) {
                 log.debug("Pod {} is RedisCluster", ownerReference.get().getKind());
                 workqueue.add(Cache.metaNamespaceKeyFunc(pod));
