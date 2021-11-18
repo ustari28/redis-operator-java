@@ -13,9 +13,8 @@ import java.util.List;
 @Slf4j
 public class K8Command {
 
-    public static List<String> executeCommandRedis(KubernetesClient client, String namespace, String []command) {
-        String cmd = "redis-cli cluster nodes";
-        ExecWatch result = client.pods().inNamespace(namespace).withName("").readingInput(System.in)
+    public static List<String> executeCommandRedis(String podName, KubernetesClient client, String namespace, String []command) {
+        ExecWatch result = client.pods().inNamespace(namespace).withName(podName).readingInput(System.in)
                 .writingOutput(System.out)
                 .writingError(System.err)
                 .withTTY()

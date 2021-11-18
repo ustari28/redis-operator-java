@@ -56,13 +56,14 @@ public class RedisClusterController {
 
             @Override
             public void onUpdate(RedisCluster oldObj, RedisCluster newObj) {
-                log.debug("Pod {} added", newObj.getMetadata().getName());
+                log.debug("Pod {} updated", newObj.getMetadata().getName());
                 workqueue.add(Cache.metaNamespaceKeyFunc(newObj));
             }
 
             @Override
             public void onDelete(RedisCluster obj, boolean deletedFinalStateUnknown) {
-                log.debug("Deleting {}", obj.getMetadata().getName());
+                log.info("Deleting {}", obj.getMetadata().getName());
+                cleanCluster(obj.getMetadata().getNamespace());
             }
         });
         podInformer.addEventHandler(new ResourceEventHandler<Pod>() {
@@ -74,6 +75,7 @@ public class RedisClusterController {
 
             @Override
             public void onUpdate(Pod oldObj, Pod newObj) {
+                log.debug("Pod {} updated", oldObj.getMetadata().getName());
                 if (!oldObj.getMetadata().getResourceVersion().equals(newObj.getMetadata().getResourceVersion())) {
                     handlePodObject(newObj);
                 }
@@ -82,6 +84,11 @@ public class RedisClusterController {
             @Override
             public void onDelete(Pod obj, boolean deletedFinalStateUnknown) {
                 log.info("Pod {} deleted with status {}", obj.getMetadata().getName(), deletedFinalStateUnknown);
+                if (obj.getMetadata().getName().startsWith("redis-")) {
+                    log.info("Deleting PVC {}", "cluster-storage-" + obj.getMetadata().getName());
+                    kClient.persistentVolumeClaims().inNamespace(obj.getMetadata().getNamespace())
+                            .withName("cluster-storage-" + obj.getMetadata().getName()).delete();
+                }
             }
         });
     }
@@ -124,12 +131,10 @@ public class RedisClusterController {
         if (desiredReplicas != leaders.size()) {
             log.info("Trying to reach desired size {} with current {}", desiredReplicas, leaders.size());
             kClient.apps().statefulSets().createOrReplace(createStatefulSet(pod, "redis-leader"));
-            checkVolumeMount(pod.getMetadata().getNamespace(), leaders.size(), desiredReplicas, "redis-leader");
         }
         if (desiredReplicas != followers.size()) {
             log.info("Trying to reach desired size {} with current {}", desiredReplicas, followers.size());
             kClient.apps().statefulSets().createOrReplace(createStatefulSet(pod, "redis-follower"));
-            checkVolumeMount(pod.getMetadata().getNamespace(), leaders.size(), desiredReplicas, "redis-follower");
         }
 
     }
@@ -230,10 +235,12 @@ public class RedisClusterController {
                 ;
     }
 
-    private void checkVolumeMount(String namespace, Integer current, Integer desired, String app) {
-        IntStream.range(desired, current)
-                .forEach(i ->
-                        kClient.persistentVolumeClaims().inNamespace(namespace).withName("cluster-storage-" + app + "-" + i));
+    private void cleanCluster(String namespace) {
+        kClient.apps().statefulSets().inNamespace(namespace).withName("redis-leader").delete();
+        kClient.apps().statefulSets().inNamespace(namespace).withName("redis-follower").delete();
+        kClient.secrets().inNamespace(namespace).withName("redis").delete();
+        kClient.configMaps().inNamespace(namespace).withName("redis").delete();
+        kClient.services().inNamespace(namespace).withName("redis-headless").delete();
     }
 
     private void handlePodObject(Pod pod) {
