@@ -19,7 +19,11 @@ import java.util.*;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 
+/**
+ * Controller which manages operations related to Redis cluster status.
+ */
 @Slf4j
 public class RedisClusterController {
     private final KubernetesClient kClient;
@@ -109,19 +113,23 @@ public class RedisClusterController {
     public void reconcile(RedisCluster pod) {
         initTasks(pod);
         List<String> leaders = kClient.pods().inNamespace(pod.getMetadata().getNamespace()).withLabel("operator", APP_LABEL)
-                .withLabel("app", "redis-leader").list().getItems().stream().filter(p -> p.getStatus().getPhase().compareToIgnoreCase("Running") == 0
+                .withLabel("cluster", "redis-leader").list().getItems().stream().filter(p -> p.getStatus().getPhase().compareToIgnoreCase("Running") == 0
                         || p.getStatus().getPhase().compareToIgnoreCase("Pending") == 0)
                 .map(x -> x.getMetadata().getName()).collect(Collectors.toList());
         List<String> followers = kClient.pods().inNamespace(pod.getMetadata().getNamespace()).withLabel("operator", APP_LABEL)
-                .withLabel("app", "redis-follower").list().getItems().stream().filter(p -> p.getStatus().getPhase().compareToIgnoreCase("Running") == 0
+                .withLabel("cluster", "redis-follower").list().getItems().stream().filter(p -> p.getStatus().getPhase().compareToIgnoreCase("Running") == 0
                         || p.getStatus().getPhase().compareToIgnoreCase("Pending") == 0)
                 .map(x -> x.getMetadata().getName()).collect(Collectors.toList());
         Integer desiredReplicas = pod.getSpec().getReplicas();
         if (desiredReplicas != leaders.size()) {
+            log.info("Trying to reach desired size {} with current {}", desiredReplicas, leaders.size());
             kClient.apps().statefulSets().createOrReplace(createStatefulSet(pod, "redis-leader"));
+            checkVolumeMount(pod.getMetadata().getNamespace(), leaders.size(), desiredReplicas, "redis-leader");
         }
         if (desiredReplicas != followers.size()) {
+            log.info("Trying to reach desired size {} with current {}", desiredReplicas, followers.size());
             kClient.apps().statefulSets().createOrReplace(createStatefulSet(pod, "redis-follower"));
+            checkVolumeMount(pod.getMetadata().getNamespace(), leaders.size(), desiredReplicas, "redis-follower");
         }
 
     }
@@ -171,7 +179,6 @@ public class RedisClusterController {
     }
 
     private StatefulSet createStatefulSet(RedisCluster pod, String appLabel) {
-
         List<EnvVar> vars = new ArrayList<>();
         EnvVar redisPasswordVar = new EnvVarBuilder().withName("REDISCLI_AUTH").withValueFrom(
                 new EnvVarSourceBuilder().withNewSecretKeyRef("password", "redis", false).build()).build();
@@ -197,7 +204,7 @@ public class RedisClusterController {
                         .withNewResources().addToRequests("storage", new QuantityBuilder().withAmount("2Gi").build())
                         .endResources().endSpec().build())
                 .withNewTemplate().withNewMetadata()
-                .withLabels(Map.of("cluster", appLabel)).endMetadata()
+                .withLabels(Map.of("cluster", appLabel, "operator", APP_LABEL)).endMetadata()
                 .withNewSpec().withTerminationGracePeriodSeconds(30L)
                 .addNewVolume().withName("work-dir").withNewEmptyDir().endEmptyDir().endVolume()
                 .addNewVolume().withName("redis-config")
@@ -221,6 +228,12 @@ public class RedisClusterController {
                 .addNewVolumeMount().withMountPath("/usr/local/etc/redis").withName("work-dir").endVolumeMount()
                 .endContainer().endSpec().endTemplate().endSpec().build()
                 ;
+    }
+
+    private void checkVolumeMount(String namespace, Integer current, Integer desired, String app) {
+        IntStream.range(desired, current)
+                .forEach(i ->
+                        kClient.persistentVolumeClaims().inNamespace(namespace).withName("cluster-storage-" + app + "-" + i));
     }
 
     private void handlePodObject(Pod pod) {
