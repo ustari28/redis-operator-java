@@ -18,8 +18,8 @@ import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.stream.Collectors;
-import java.util.stream.IntStream;
 
 /**
  * Controller which manages operations related to Redis cluster status.
@@ -33,6 +33,7 @@ public class RedisClusterController {
     private final Lister<RedisCluster> podRedisClusterLister;
     private final BlockingQueue<String> workqueue;
     private static final String APP_LABEL = "rc_operator";
+    private final BlockingQueue<TaskEnum> tasks;
 
     public RedisClusterController(KubernetesClient kClient, MixedOperation redisClient,
                                   SharedIndexInformer<Pod> podInformer,
@@ -44,6 +45,8 @@ public class RedisClusterController {
         this.redisClient = redisClient;
         this.podRedisClusterLister = new Lister<RedisCluster>(redisClusterInformer.getIndexer(), namespace);
         this.workqueue = new ArrayBlockingQueue<>(128);
+
+        this.tasks = new LinkedBlockingQueue<>();
     }
 
     public void create() {
@@ -97,6 +100,8 @@ public class RedisClusterController {
         log.info("Starting thread");
         while (!redisClusterInformer.hasSynced()) {
         }
+        TaskManager manager = new TaskManager(tasks, kClient);
+        manager.start();
         while (true) {
             try {
                 log.info("Waiting for a new task");
@@ -105,6 +110,7 @@ public class RedisClusterController {
                 String name = elem.split("/")[1];
                 Optional<RedisCluster> pod = Optional.ofNullable(podRedisClusterLister.get(name));
                 if (pod.isPresent()) {
+                    manager.setRedis(pod.get());
                     reconcile(pod.get());
                 } else {
                     log.error("Pod {} is no present more into the cache", name);
@@ -136,7 +142,11 @@ public class RedisClusterController {
             log.info("Trying to reach desired size {} with current {}", desiredReplicas, followers.size());
             kClient.apps().statefulSets().createOrReplace(createStatefulSet(pod, "redis-follower"));
         }
-
+        if (leaders.size() == 0) {
+            tasks.add(TaskEnum.CHECK_NEW);
+        } else {
+            tasks.add(TaskEnum.CHECK);
+        }
     }
 
     private void initTasks(RedisCluster pod) {
@@ -169,7 +179,7 @@ public class RedisClusterController {
                 .withNewMetadata().withName("redis-headless").withNamespace(namespace)
                 .withLabels(Map.of("operator", APP_LABEL, "app", "redis-headless"))
                 .endMetadata()
-                .withNewSpec().withSelector(Map.of("cluster", "redis-leader")).endSpec().editOrNewSpec()
+                .withNewSpec().withSelector(Map.of("service", "redis-headless")).endSpec().editOrNewSpec()
                 .addNewPort().withName("6379").withPort(6379).withTargetPort(new IntOrString(6379)).endPort()
                 .addNewPort().withName("16379").withPort(16379).withTargetPort(new IntOrString(16379)).endPort()
                 .endSpec().build();
@@ -209,7 +219,7 @@ public class RedisClusterController {
                         .withNewResources().addToRequests("storage", new QuantityBuilder().withAmount("2Gi").build())
                         .endResources().endSpec().build())
                 .withNewTemplate().withNewMetadata()
-                .withLabels(Map.of("cluster", appLabel, "operator", APP_LABEL)).endMetadata()
+                .withLabels(Map.of("cluster", appLabel, "operator", APP_LABEL, "service", "redis-headless")).endMetadata()
                 .withNewSpec().withTerminationGracePeriodSeconds(30L)
                 .addNewVolume().withName("work-dir").withNewEmptyDir().endEmptyDir().endVolume()
                 .addNewVolume().withName("redis-config")
