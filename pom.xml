@@ -1,12 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
 
-<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
 
     <groupId>com.alan.developer.java.operator</groupId>
     <artifactId>redis-operator</artifactId>
-    <version>1.0-SNAPSHOT</version>
+    <version>1.0.0</version>
 
     <name>redis-operator</name>
     <!-- FIXME change it to the project's website -->
@@ -21,7 +20,7 @@
         <maven-surefire-plugin.version>3.0.0-M4</maven-surefire-plugin.version>
         <maven-failsafe-plugin.version>3.0.0-M5</maven-failsafe-plugin.version>
         <exec-maven-plugin.version>3.0.0</exec-maven-plugin.version>
-        <image.user>rohankanojia</image.user>
+        <image.user>alan985</image.user>
         <jkube.generator.name>quay.io/${image.user}/${project.artifactId}:${project.version}</jkube.generator.name>
         <jkube.version>1.5.1</jkube.version>
         <version.fabric8.client>5.9.0</version.fabric8.client>
@@ -57,6 +56,16 @@
             <artifactId>lombok</artifactId>
             <version>1.18.20</version>
         </dependency>
+        <dependency>
+            <groupId>ch.qos.logback</groupId>
+            <artifactId>logback-classic</artifactId>
+            <version>1.2.6</version>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.commons</groupId>
+            <artifactId>commons-lang3</artifactId>
+            <version>3.10</version>
+        </dependency>
     </dependencies>
 
     <build>
@@ -75,7 +84,7 @@
                             <archive>
                                 <manifest>
                                     <mainClass>
-                                        io.fabric8.podset.operator.PodSetOperatorMain
+                                        com.alan.developer.java.operator.RedisOperatorApp
                                     </mainClass>
                                 </manifest>
                             </archive>
@@ -99,8 +108,26 @@
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
-                <!-- JUnit 5 requires Surefire version 2.22.0 or higher -->
                 <version>${maven-surefire-plugin.version}</version>
+            </plugin>
+            <plugin>
+                <groupId>external.atlassian.jgitflow</groupId>
+                <artifactId>jgitflow-maven-plugin</artifactId>
+                <version>1.0-m5.1</version>
+                <configuration>
+                    <username>${git.user}</username>
+                    <password>${git.password}</password>
+                    <flowInitContext>
+                        <masterBranchName>main</masterBranchName>
+                        <developBranchName>develop</developBranchName>
+                        <featureBranchPrefix>feature/</featureBranchPrefix>
+                        <releaseBranchPrefix>release/</releaseBranchPrefix>
+                        <hotfixBranchPrefix>hotfix/</hotfixBranchPrefix>
+                    </flowInitContext>
+                    <noDeploy>true</noDeploy>
+                    <squash>true</squash>
+                    <scmCommentPrefix>[RELEASE]</scmCommentPrefix>
+                </configuration>
             </plugin>
         </plugins>
     </build>

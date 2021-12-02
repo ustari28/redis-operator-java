@@ -4,6 +4,8 @@ import lombok.Data;
 
 @Data
 public class RedisClusterSpec {
-    private String image;
     private Integer replicas;
+    private String insecurePort = "6379";
+    private String securePort = "6380";
+    private String headLessServiceName = "redis-headless";
 }
