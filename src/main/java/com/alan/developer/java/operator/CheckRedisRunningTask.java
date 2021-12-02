@@ -16,14 +16,14 @@ public class CheckRedisRunningTask extends Thread {
     private final KubernetesClient kClient;
     private final Long waitTime = 10 * 1000L;
     private final RedisCluster redis;
-    private final BlockingQueue<TaskEnum> nextTask;
-    private final Boolean newCluster;
+    private final BlockingQueue<TaskEnum> queue;
+    private final TaskEnum nextTask;
 
-    public CheckRedisRunningTask(KubernetesClient kClient, BlockingQueue<TaskEnum> nextTask, RedisCluster redis, Boolean newCluster) {
+    public CheckRedisRunningTask(KubernetesClient kClient, BlockingQueue<TaskEnum> queue, RedisCluster redis, TaskEnum nextTask) {
         this.kClient = kClient;
         this.redis = redis;
+        this.queue = queue;
         this.nextTask = nextTask;
-        this.newCluster = newCluster;
     }
 
     @Override
@@ -56,10 +56,6 @@ public class CheckRedisRunningTask extends Thread {
             }
         }
         log.info("All pods are ready");
-        if (newCluster) {
-            nextTask.add(TaskEnum.SETUP);
-        }else {
-            log.info("New node");
-        }
+        queue.add(nextTask);
     }
 }

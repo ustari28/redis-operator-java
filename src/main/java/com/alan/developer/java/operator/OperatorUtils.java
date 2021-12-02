@@ -18,7 +18,7 @@ public class OperatorUtils {
                 .writingError(System.err)
                 .usingListener(listener)
                 .exec(command);
-        listener.waitForCompletation();
+        listener.waitForTermination();
         watch.close();
         BufferedReader br = new BufferedReader(new InputStreamReader(watch.getOutput()));
         List<String> lines = new LinkedList<>();

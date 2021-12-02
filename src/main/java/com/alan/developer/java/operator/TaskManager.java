@@ -13,6 +13,7 @@ public class TaskManager extends Thread {
     private final BlockingQueue<TaskEnum> tasks;
     private final Boolean running = Boolean.TRUE;
     private final KubernetesClient kClient;
+    private Thread currentThread;
     @Setter
     private RedisCluster redis;
 
@@ -42,14 +43,29 @@ public class TaskManager extends Thread {
     private void createTask(TaskEnum task) {
         log.info("New task {}", task);
         switch (task) {
-            case CHECK:
-                new CheckRedisRunningTask(kClient, tasks, redis, false).start();
+            case CHECK_NEW_NODE:
+                new CheckRedisRunningTask(kClient, tasks, redis, TaskEnum.ADD_NODE).start();
                 break;
-            case CHECK_NEW:
-                new CheckRedisRunningTask(kClient, tasks, redis, true).start();
+            case CHECK_NEW_CLUSTER:
+                new CheckRedisRunningTask(kClient, tasks, redis, TaskEnum.SETUP).start();
+                break;
+            case CHECK_DELETE_NODE:
+                new CheckRedisRunningTask(kClient, tasks, redis, TaskEnum.DELETE_NODE).start();
+                break;
+            case CHECK_NONE:
+                new CheckRedisRunningTask(kClient, tasks, redis, TaskEnum.NONE).start();
                 break;
             case SETUP:
                 new SetupRedisTask(kClient, tasks, redis).start();
+                break;
+            case ADD_NODE:
+                new AddNodeTask(kClient, tasks, redis).start();
+                break;
+            case DELETE_NODE:
+                new DeleteNodeTask(kClient, tasks, redis).start();
+                break;
+            case NONE:
+                log.info("End of tasks");
                 break;
             default:
                 log.warn("Task is not implemented - {}", task);

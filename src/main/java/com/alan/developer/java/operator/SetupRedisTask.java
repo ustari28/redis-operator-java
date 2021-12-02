@@ -12,15 +12,15 @@ import java.util.stream.IntStream;
 public class SetupRedisTask extends Thread {
     private final Boolean running = Boolean.TRUE;
     private final KubernetesClient kClient;
-    private final BlockingQueue<TaskEnum> nextTask;
+    private final BlockingQueue<TaskEnum> queue;
     private final RedisCluster redis;
     private static final String SUFFIX_DNS = "default.svc.cluster.local";
     private static final Integer MAX_ATTEMPTS = 10;
 
 
-    public SetupRedisTask(KubernetesClient kClient, BlockingQueue<TaskEnum> nextTask, RedisCluster redis) {
+    public SetupRedisTask(KubernetesClient kClient, BlockingQueue<TaskEnum> queue, RedisCluster redis) {
         this.kClient = kClient;
-        this.nextTask = nextTask;
+        this.queue = queue;
         this.redis = redis;
     }
 
@@ -70,10 +70,6 @@ public class SetupRedisTask extends Thread {
         log.info(command.stream().reduce((x, y) -> x + " " + y).get());
         OperatorUtils.executeCommandRedis("redis-leader-0", "redis", kClient,
                 redis.getMetadata().getNamespace(), command.toArray(new String[0])).forEach(log::info);
-    }
-
-    private String getNodeId(String podName, String containerId, String namespace) {
-        String[] nodeIdCmd = {"redis-cli", "cluster", "myid"};
-        return OperatorUtils.executeCommandRedis(podName, containerId, kClient, namespace, nodeIdCmd).get(0);
+        queue.add(TaskEnum.CHECK_NONE);
     }
 }

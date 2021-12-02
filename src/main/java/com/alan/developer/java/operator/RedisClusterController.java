@@ -143,21 +143,25 @@ public class RedisClusterController {
             kClient.apps().statefulSets().createOrReplace(createStatefulSet(pod, "redis-follower"));
         }
         if (leaders.size() == 0) {
-            tasks.add(TaskEnum.CHECK_NEW);
-        } else {
-            tasks.add(TaskEnum.CHECK);
+            tasks.add(TaskEnum.CHECK_NEW_CLUSTER);
+        } else if (leaders.size() < pod.getSpec().getReplicas()) {
+            tasks.add(TaskEnum.CHECK_NEW_NODE);
+        } else if (leaders.size() > pod.getSpec().getReplicas()) {
+            tasks.add(TaskEnum.CHECK_DELETE_NODE);
         }
     }
 
     private void initTasks(RedisCluster pod) {
         log.info("Performing initial tasks");
-        Service headLess = createHeadLessService(pod.getMetadata().getNamespace());
-        Secret secret = createSecret(pod.getMetadata().getNamespace());
+
+        if (Objects.isNull(kClient.services().inNamespace(pod.getMetadata().getNamespace()).withName("redis-headless").get())) {
+            log.info("Generating secret for cluster");
+            kClient.services().createOrReplace(createHeadLessService(pod.getMetadata().getNamespace()));
+        }
         if (Objects.isNull(kClient.secrets().inNamespace(pod.getMetadata().getNamespace()).withName("redis").get())) {
             log.info("Generating secret for cluster");
-            kClient.services().createOrReplace(headLess);
+            kClient.secrets().createOrReplace(createSecret(pod.getMetadata().getNamespace()));
         }
-        kClient.secrets().createOrReplace(secret);
         try {
             kClient.configMaps().createOrReplace(createConfigMap(pod));
         } catch (IOException e) {

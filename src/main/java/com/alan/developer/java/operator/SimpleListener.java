@@ -12,7 +12,7 @@ public class SimpleListener implements ExecListener {
     BlockingQueue<String> wait = new LinkedBlockingQueue<>();
     @Override
     public void onOpen(Response response) {
-        log.info("Opening command");
+        log.info("Opening command {}", response.message());
     }
 
     @Override
@@ -27,7 +27,7 @@ public class SimpleListener implements ExecListener {
         wait.add("Finished Ok");
     }
 
-    public void waitForCompletation() {
+    public void waitForTermination() {
         try {
             wait.take();
         } catch (InterruptedException e) {
