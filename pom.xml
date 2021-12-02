@@ -5,7 +5,7 @@
 
     <groupId>com.alan.developer.java.operator</groupId>
     <artifactId>redis-operator</artifactId>
-    <version>1.0.0</version>
+    <version>1.0.1-SNAPSHOT</version>
 
     <name>redis-operator</name>
     <!-- FIXME change it to the project's website -->
